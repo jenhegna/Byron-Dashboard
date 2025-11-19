@@ -1,0 +1,5 @@
+{
+  "name": "ByronFinancial",
+  "description": "A comprehensive financial dashboard for institutional data analysis, featuring budget vs. actuals tracking, expense breakdowns, and interactive filtering.",
+  "requestFramePermissions": []
+}
