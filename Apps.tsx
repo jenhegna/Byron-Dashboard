@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { 
-  LayoutDashboard, 
-  DollarSign, 
-  TrendingDown, 
-  TrendingUp, 
+import {
+  DollarSign,
+  TrendingDown,
+  TrendingUp,
   Filter,
   Briefcase,
   Users,
-  AlertCircle
+  AlertCircle,
+  PiggyBank,
+  LayoutGrid,
 } from 'lucide-react';
 import { parseCSV, formatCurrency } from './utils/dataProcessing';
 import { FinancialRecord, DashboardMetrics } from './types';
@@ -17,6 +18,8 @@ import DataTable from './components/DataTable';
 import Header from './components/Header';
 import { GOOGLE_SHEET_URL } from './constants';
 
+type TypeFilter = 'All' | 'R' | 'E';
+
 function App() {
   const [data, setData] = useState<FinancialRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -25,8 +28,8 @@ function App() {
 
   const [selectedFund, setSelectedFund] = useState<string>('All');
   const [selectedOrg, setSelectedOrg] = useState<string>('All');
-  
-  // Access Control States
+  const [selectedType, setSelectedType] = useState<TypeFilter>('All');
+
   const [isAdmin, setIsAdmin] = useState(false);
   const [isEmbed, setIsEmbed] = useState(false);
 
@@ -40,7 +43,7 @@ function App() {
       }
       const csvText = await response.text();
       const parsed = parseCSV(csvText);
-      
+
       if (parsed.length === 0) {
         throw new Error("No data found in the spreadsheet. Please check the published link.");
       }
@@ -56,26 +59,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // 1. Parse URL Parameters for View Modes
     const params = new URLSearchParams(window.location.search);
-    
-    // ?admin=true : Shows the CSV Import button
-    if (params.get('admin') === 'true') {
-      setIsAdmin(true);
-    }
-    
-    // ?mode=embed : Hides navigation and adjusts padding for Iframe use
-    if (params.get('mode') === 'embed') {
-      setIsEmbed(true);
-    }
+    if (params.get('admin') === 'true') setIsAdmin(true);
+    if (params.get('mode') === 'embed') setIsEmbed(true);
 
-    // 2. Initial Data Fetch
     fetchData();
-    
-    // Optional: Auto-refresh every 5 minutes if embedded
+
     let intervalId: NodeJS.Timeout;
     if (params.get('mode') === 'embed') {
-       intervalId = setInterval(fetchData, 5 * 60 * 1000); 
+      intervalId = setInterval(fetchData, 5 * 60 * 1000);
     }
     return () => clearInterval(intervalId);
   }, [fetchData]);
@@ -90,7 +82,7 @@ function App() {
         const parsed = parseCSV(text);
         setData(parsed);
         setLoading(false);
-        setLastUpdated(new Date()); // Technically updated, though manual
+        setLastUpdated(new Date());
       };
       reader.readAsText(file);
     }
@@ -100,12 +92,22 @@ function App() {
     return data.filter(item => {
       const fundMatch = selectedFund === 'All' || item.FundDescription === selectedFund;
       const orgMatch = selectedOrg === 'All' || item.Organization === selectedOrg;
+      const typeMatch = selectedType === 'All' || item.Type === selectedType;
+      return fundMatch && orgMatch && typeMatch;
+    });
+  }, [data, selectedFund, selectedOrg, selectedType]);
+
+  // Always compute metrics over all types regardless of type filter (so KPIs stay accurate)
+  const metricsData = useMemo(() => {
+    return data.filter(item => {
+      const fundMatch = selectedFund === 'All' || item.FundDescription === selectedFund;
+      const orgMatch = selectedOrg === 'All' || item.Organization === selectedOrg;
       return fundMatch && orgMatch;
     });
   }, [data, selectedFund, selectedOrg]);
 
   const metrics: DashboardMetrics = useMemo(() => {
-    return filteredData.reduce((acc, curr) => {
+    return metricsData.reduce((acc, curr) => {
       if (curr.Type === 'R') {
         acc.totalRevenueBudget += curr.FY26Budget;
         acc.totalRevenueActual += curr.FY26YTD;
@@ -113,11 +115,9 @@ function App() {
         acc.totalExpenseBudget += curr.FY26Budget;
         acc.totalExpenseActual += curr.FY26YTD;
         acc.totalEncumbered += curr.EncumbranceAmt;
-        
-        // Calculate Salaries & Benefits for Ratio
         const srcObj = curr.SourceObject || "";
         if (srcObj.includes("Salaries") || srcObj.includes("Benefits")) {
-            acc.salaryBenefitsExpense += curr.FY26YTD;
+          acc.salaryBenefitsExpense += curr.FY26YTD;
         }
       }
       return acc;
@@ -130,23 +130,31 @@ function App() {
       totalEncumbered: 0,
       salaryBenefitsExpense: 0
     });
-  }, [filteredData]);
+  }, [metricsData]);
 
   metrics.netIncomeActual = metrics.totalRevenueActual - metrics.totalExpenseActual;
 
-  // Unique lists for filters
-  const uniqueFunds = useMemo(() => ['All', ...Array.from(new Set(data.map(item => item.FundDescription))).filter(Boolean).sort()], [data]);
-  const uniqueOrgs = useMemo(() => ['All', ...Array.from(new Set(data.map(item => item.Organization))).filter(Boolean).sort()], [data]);
+  const budgetRemaining = metrics.totalExpenseBudget - metrics.totalExpenseActual - metrics.totalEncumbered;
+  const salaryRatio = metrics.totalExpenseActual
+    ? (metrics.salaryBenefitsExpense / metrics.totalExpenseActual * 100).toFixed(1)
+    : "0.0";
 
-  const salaryRatio = metrics.totalExpenseActual ? (metrics.salaryBenefitsExpense / metrics.totalExpenseActual * 100).toFixed(1) : "0.0";
+  const uniqueFunds = useMemo(() =>
+    ['All', ...Array.from(new Set(data.map(item => item.FundDescription))).filter(Boolean).sort()],
+    [data]
+  );
+  const uniqueOrgs = useMemo(() =>
+    ['All', ...Array.from(new Set(data.map(item => item.Organization))).filter(Boolean).sort()],
+    [data]
+  );
+
+  const selectClass = "pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-byron-gold shadow-sm w-full appearance-none cursor-pointer hover:border-byron-gold transition-colors disabled:opacity-50";
 
   return (
-    // BG color changes to white in embed mode to blend with Google Sites
     <div className={`min-h-screen font-sans ${isEmbed ? 'bg-white' : 'bg-slate-50 pb-12'}`}>
-      
-      {/* Header Component */}
+
       {!isEmbed && (
-        <Header 
+        <Header
           isAdmin={isAdmin}
           lastUpdated={lastUpdated}
           loading={loading}
@@ -155,119 +163,190 @@ function App() {
         />
       )}
 
-      {/* Main Content */}
       <main className={`max-w-7xl mx-auto ${isEmbed ? 'p-2' : 'px-4 sm:px-6 lg:px-8 py-8'}`}>
-        
-        {/* Error State */}
+
+        {/* Error Banner */}
         {error && (
           <div className="mb-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-center gap-2">
-            <AlertCircle className="w-5 h-5" />
-            <span>{error}</span>
-            <button onClick={fetchData} className="ml-auto underline text-sm hover:text-red-800">Try Again</button>
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
+            <span className="flex-1 text-sm">{error}</span>
+            <button onClick={fetchData} className="ml-auto underline text-sm hover:text-red-800 font-medium">
+              Try Again
+            </button>
           </div>
         )}
 
-        {/* Loading Skeleton Overlay (Optional simple version) */}
+        {/* Loading Overlay */}
         {loading && !data.length && (
-             <div className="fixed inset-0 bg-white/80 z-50 flex items-center justify-center">
-                 <div className="flex flex-col items-center animate-pulse">
-                     <div className="h-8 w-8 bg-blue-600 rounded-full mb-2 animate-bounce"></div>
-                     <p className="text-slate-600 font-medium">Loading Financial Data...</p>
-                 </div>
-             </div>
+          <div className="fixed inset-0 bg-white/80 z-50 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-3">
+              <div className="relative">
+                <div className="h-10 w-10 rounded-full border-4 border-byron-gold-light border-t-byron-gold animate-spin" />
+              </div>
+              <p className="text-slate-600 font-semibold text-sm">Loading Financial Data…</p>
+            </div>
+          </div>
         )}
 
         {/* Page Title & Filters */}
-        <div className={`mb-6 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white rounded-xl shadow-sm border border-slate-100 ${isEmbed ? 'p-3' : 'p-4'}`}>
-          <div>
-            <h1 className={`${isEmbed ? 'text-lg' : 'text-2xl'} font-bold text-slate-900`}>
-              Financial Overview
-            </h1>
-            {!isEmbed && <p className="text-slate-500 mt-1 text-sm">Live Snapshot from District Records</p>}
-          </div>
-          
-          <div className="flex flex-col sm:flex-row gap-3">
-            <div className="relative">
-              <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <select 
-                value={selectedFund} 
-                onChange={(e) => setSelectedFund(e.target.value)}
-                className="pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm w-full appearance-none cursor-pointer hover:bg-slate-100 transition-colors"
-                disabled={loading}
-              >
-                {uniqueFunds.map(f => <option key={f} value={f}>{f === 'All' ? 'All Funds' : f}</option>)}
-              </select>
+        <div className={`mb-6 bg-white rounded-xl shadow-sm border border-slate-100 ${isEmbed ? 'p-3' : 'p-5'}`}>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div>
+              <h1 className={`${isEmbed ? 'text-lg' : 'text-2xl'} font-bold text-slate-900 flex items-center gap-2`}>
+                <LayoutGrid className="w-6 h-6 text-byron-gold" />
+                Financial Overview
+              </h1>
+              {!isEmbed && (
+                <p className="text-slate-400 mt-1 text-sm">
+                  FY26 Budget vs. Actual · Live from District Records
+                </p>
+              )}
             </div>
-            <div className="relative">
-              <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <select 
-                value={selectedOrg} 
-                onChange={(e) => setSelectedOrg(e.target.value)}
-                className="pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm w-full appearance-none cursor-pointer hover:bg-slate-100 transition-colors"
-                disabled={loading}
-              >
-                {uniqueOrgs.map(o => <option key={o} value={o}>{o === 'All' ? 'All Sites' : o}</option>)}
-              </select>
+
+            {/* Filters */}
+            <div className="flex flex-col sm:flex-row gap-3">
+
+              {/* Type Toggle */}
+              <div className="flex rounded-lg border border-slate-200 overflow-hidden text-sm font-medium">
+                {(['All', 'R', 'E'] as TypeFilter[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setSelectedType(t)}
+                    disabled={loading}
+                    className={`px-3 py-2 transition-colors ${
+                      selectedType === t
+                        ? 'bg-byron-gold text-byron-black font-semibold'
+                        : 'bg-white text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {t === 'All' ? 'All' : t === 'R' ? 'Revenue' : 'Expenses'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Fund Select */}
+              <div className="relative">
+                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                <select
+                  value={selectedFund}
+                  onChange={(e) => setSelectedFund(e.target.value)}
+                  className={selectClass}
+                  disabled={loading}
+                >
+                  {uniqueFunds.map(f => (
+                    <option key={f} value={f}>{f === 'All' ? 'All Funds' : f}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Org Select */}
+              <div className="relative">
+                <Briefcase className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                <select
+                  value={selectedOrg}
+                  onChange={(e) => setSelectedOrg(e.target.value)}
+                  className={selectClass}
+                  disabled={loading}
+                >
+                  {uniqueOrgs.map(o => (
+                    <option key={o} value={o}>{o === 'All' ? 'All Sites' : o}</option>
+                  ))}
+                </select>
+              </div>
             </div>
           </div>
         </div>
 
         {/* KPI Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <KPICard 
-            title="YTD Revenue" 
-            value={formatCurrency(metrics.totalRevenueActual)} 
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <KPICard
+            title="YTD Revenue"
+            value={formatCurrency(metrics.totalRevenueActual)}
             subValue={`Budget: ${formatCurrency(metrics.totalRevenueBudget)}`}
             icon={TrendingUp}
-            colorClass="bg-emerald-500"
+            colorClass="bg-byron-gold"
+            iconTextClass="text-byron-black"
           />
-          <KPICard 
-            title="YTD Expenses" 
-            value={formatCurrency(metrics.totalExpenseActual)} 
+          <KPICard
+            title="YTD Expenses"
+            value={formatCurrency(metrics.totalExpenseActual)}
             subValue={`Budget: ${formatCurrency(metrics.totalExpenseBudget)}`}
             icon={TrendingDown}
-            colorClass="bg-blue-500"
+            colorClass="bg-byron-black"
+            iconTextClass="text-white"
           />
-           <KPICard 
-            title="Encumbered Funds" 
-            value={formatCurrency(metrics.totalEncumbered)} 
-            subValue="Committed / POs"
+          <KPICard
+            title="Encumbered Funds"
+            value={formatCurrency(metrics.totalEncumbered)}
+            subValue="Committed / Open POs"
             icon={DollarSign}
             colorClass="bg-amber-500"
+            iconTextClass="text-white"
           />
-           <KPICard 
-            title="Personnel Cost Ratio" 
-            value={`${salaryRatio}%`} 
-            subValue="of Total Expenses"
-            icon={Users}
-            colorClass="bg-indigo-500"
+          <KPICard
+            title="Budget Remaining"
+            value={formatCurrency(budgetRemaining)}
+            subValue="Unencumbered Expense Budget"
+            icon={PiggyBank}
+            colorClass={budgetRemaining >= 0 ? 'bg-emerald-600' : 'bg-red-500'}
+            iconTextClass="text-white"
           />
         </div>
 
-        {/* Charts Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-1 min-h-[350px]">
-            <RevenueSourceChart data={filteredData} />
-          </div>
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 lg:col-span-2 min-h-[350px]">
-             <ProgramExpenseChart data={filteredData} />
+        {/* Secondary KPI: Personnel Ratio */}
+        <div className="mb-6">
+          <div className="bg-white rounded-xl shadow-sm border border-slate-100 p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-slate-800">
+                <Users className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-500">Personnel Cost Ratio</p>
+                <p className="text-xl font-bold text-slate-900">{salaryRatio}%</p>
+              </div>
+            </div>
+            <div className="flex-1 mx-6 hidden sm:block">
+              <div className="w-full bg-slate-100 rounded-full h-3">
+                <div
+                  className="bg-byron-gold h-3 rounded-full transition-all duration-700"
+                  style={{ width: `${Math.min(parseFloat(salaryRatio), 100)}%` }}
+                />
+              </div>
+              <p className="text-xs text-slate-400 mt-1">Salaries & Benefits as % of Total YTD Expenses</p>
+            </div>
+            <div className="text-right hidden sm:block">
+              <p className="text-sm font-semibold text-slate-700">{formatCurrency(metrics.salaryBenefitsExpense)}</p>
+              <p className="text-xs text-slate-400">of {formatCurrency(metrics.totalExpenseActual)}</p>
+            </div>
           </div>
         </div>
-        
-        <div className="grid grid-cols-1 lg:grid-cols-1 gap-6 mb-8">
-             <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 min-h-[350px]">
-                <ExpenseObjectChart data={filteredData} />
-            </div>
+
+        {/* Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 lg:col-span-1 min-h-[350px]">
+            <RevenueSourceChart data={metricsData} />
+          </div>
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 lg:col-span-2 min-h-[350px]">
+            <ProgramExpenseChart data={metricsData} />
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 min-h-[350px]">
+            <ExpenseObjectChart data={metricsData} />
+          </div>
         </div>
 
         {/* Data Table */}
-        {/* Shown by default, or could be toggled off in embed mode if space is tight */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-             <h3 className="text-lg font-bold text-slate-900">Detail Transaction Records</h3>
-          </div>
-          <DataTable data={filteredData} />
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-lg font-bold text-slate-900">Transaction Records</h3>
+          {filteredData.length > 0 && (
+            <span className="text-sm text-slate-400 bg-slate-100 px-3 py-1 rounded-full font-medium">
+              {filteredData.length.toLocaleString()} records
+            </span>
+          )}
         </div>
+        <DataTable data={filteredData} />
 
       </main>
     </div>
